@@ -1,5 +1,7 @@
 package foxy.org.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import foxy.org.Parser;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
@@ -9,16 +11,22 @@ import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
+import java.io.File;
+import java.net.SocketException;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class ParserImpl implements Parser {
     String productLink = "https://europe.albiononline2d.com/en/item/id/T";
 
     @Override
     public void parsSite() {
-
         List<String> itemIds = new ArrayList<>();
         itemIds.add("WOOD");
         itemIds.add("CLOTH");
@@ -28,12 +36,12 @@ public class ParserImpl implements Parser {
         itemIds.add("METALBAR");
         itemIds.add("ORE");
         itemIds.add("PLANKS");
-        itemIds.add("STONE");
+        itemIds.add("ROCK");
         itemIds.add("STONEBLOCK");
 
+        Map<String, Map<String, String>> data = new ConcurrentHashMap<>();
 
-        Map<String, Map<String, String>> data = new HashMap<>();
-
+        // Настройка ChromeOptions для отключения изображений и ускорения загрузки страницы
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless"); // Запуск браузера в "безголовом" режиме (без отображения GUI)
         options.addArguments("--disable-gpu");
@@ -41,41 +49,44 @@ public class ParserImpl implements Parser {
         options.addArguments("--disable-dev-shm-usage");
 
         // Создание ExecutorService для многопоточности
-        ExecutorService executor = Executors.newFixedThreadPool(4);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
 
-        List<Future<Map.Entry<String, Map<String, String>>>> futures = new ArrayList<>();
-
-        for (int tear = 2; tear <= 5; tear++) {
+        for (int tear = 2; tear <= 3; tear++) {
             for (String s : itemIds) {
                 String url = productLink + tear + "_" + s;
-                futures.add(executor.submit(() -> fetchData(url, options)));
-            }
-        }
-
-        // Получение результатов
-        for (Future<Map.Entry<String, Map<String, String>>> future : futures) {
-            try {
-                Map.Entry<String, Map<String, String>> result = future.get();
-                if (result != null) {
-                    data.put(result.getKey(), result.getValue());
-                }
-            } catch (InterruptedException | ExecutionException e) {
-                e.printStackTrace();
+                executor.submit(() -> fetchData(url, options, data));
             }
         }
 
         // Завершение работы ExecutorService
         executor.shutdown();
+        try {
+            executor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        // Сохранение данных в JSON-файл
+        saveDataToJson(data, "data.json");
+        ObjectMapper mapper = new ObjectMapper();
+
+        try {
+            Map<String, Map<String, String>> value = mapper.readValue(new File("data.json"), Map.class);
+
+            System.out.println(value.get("Birch Logs (T2)").get("Lymhurst:"));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
-    private Map.Entry<String, Map<String, String>> fetchData(String url, ChromeOptions options) {
+    private void fetchData(String url, ChromeOptions options, Map<String, Map<String, String>> data) {
         WebDriver driver = new ChromeDriver(options);
-        driver.manage().timeouts().implicitlyWait(10, TimeUnit.SECONDS); // Неявное ожидание
+        driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(5)); // Неявное ожидание
 
         try {
             driver.get(url);
 
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
             WebElement tableElement = wait.until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector("table.table.table-striped")));
 
             // Парсинг заголовка h1
@@ -85,7 +96,7 @@ public class ParserImpl implements Parser {
             // Поиск таблицы
             WebElement table = driver.findElement(By.cssSelector("table.table.table-striped tbody#market-table-body"));
             if (table != null) {
-                Map<String, String> tableData = new HashMap<>();
+                Map<String, String> tableData = new ConcurrentHashMap<>();
 
                 // Разбиваем таблицу на строки
                 List<WebElement> rows = table.findElements(By.tagName("tr"));
@@ -98,7 +109,7 @@ public class ParserImpl implements Parser {
                     }
                 }
 
-                return new AbstractMap.SimpleEntry<>(header, tableData);
+                data.put(header, tableData);
             } else {
                 System.out.println("Таблица не найдена на странице: " + url);
             }
@@ -107,8 +118,17 @@ public class ParserImpl implements Parser {
         } finally {
             driver.quit();
         }
-        return null;
     }
 
+    private void saveDataToJson(Map<String, Map<String, String>> data, String filePath) {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
 
+        try {
+            mapper.writeValue(new File(filePath), data);
+            System.out.println("Данные успешно сохранены в файл " + filePath);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
 }
